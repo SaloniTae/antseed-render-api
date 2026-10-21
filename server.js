@@ -1,7 +1,9 @@
 'use strict';
 
 const express = require('express');
+const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createProxyMiddleware } = require('http-proxy-middleware');
@@ -31,6 +33,25 @@ function runCli(args) {
       else reject(new Error('antseed ' + args.join(' ') + ' exited (code=' + code + ', signal=' + signal + ')'));
     });
   });
+}
+
+function configureFreeOnlyRouting() {
+  const configPath = path.resolve(
+    process.env.ANTSEED_CONFIG || path.join(os.homedir(), '.antseed', 'config.json')
+  );
+
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  config.buyer = config.buyer || {};
+  config.buyer.routingPreferences = config.buyer.routingPreferences || {};
+  config.buyer.routingPreferences.preferFreePeers = true;
+  config.buyer.maxPricing = config.buyer.maxPricing || {};
+  config.buyer.maxPricing.defaults = config.buyer.maxPricing.defaults || {};
+  config.buyer.maxPricing.defaults.inputUsdPerMillion = 0;
+  config.buyer.maxPricing.defaults.outputUsdPerMillion = 0;
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
+  console.log('Configured free-peer preference and hard zero-price caps in ' + configPath);
 }
 
 function sleep(ms) {
@@ -107,21 +128,27 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 async function startBuyer() {
-  // Hard price caps, not just a routing preference: zero-priced sellers only.
-  await runCli(['config', 'init']);
-  await runCli(['config', 'buyer', 'set', 'routingPreferences.preferFreePeers', 'true']);
-  await runCli(['config', 'buyer', 'set', 'maxPricing.defaults.inputUsdPerMillion', '0']);
-  await runCli(['config', 'buyer', 'set', 'maxPricing.defaults.outputUsdPerMillion', '0']);
+  const configPath = path.resolve(
+    process.env.ANTSEED_CONFIG || path.join(os.homedir(), '.antseed', 'config.json')
+  );
+  if (!fs.existsSync(configPath)) {
+    await runCli(['config', 'init']);
+  }
 
-  const buyerEnv = {
-    ...process.env,
-    ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION: '0',
-    ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION: '0',
-  };
+  // Write booleans and numbers as actual JSON types; config buyer set treats CLI values as strings.
+  configureFreeOnlyRouting();
 
-  buyerProcess = spawn(ANTSEED_BIN, ['buyer', 'start'], {
+  // These CLI flags override config.json, enforcing zero-price hard caps for this process.
+  buyerProcess = spawn(ANTSEED_BIN, [
+    'buyer',
+    'start',
+    '--max-input-usd-per-million',
+    '0',
+    '--max-output-usd-per-million',
+    '0',
+  ], {
     stdio: 'inherit',
-    env: buyerEnv,
+    env: process.env,
   });
 
   buyerProcess.once('error', err => {
