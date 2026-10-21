@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: antseed-render-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: API_TOKEN
+        generateValue: true
