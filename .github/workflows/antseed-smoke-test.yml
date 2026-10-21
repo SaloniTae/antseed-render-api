@@ -1,0 +1,81 @@
+name: AntSeed buyer smoke test
+
+on:
+  push:
+    paths:
+      - ".github/workflows/antseed-smoke-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  buyer-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install AntSeed CLI and test GLM 5.3 Flash
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          npm install --global @antseed/cli
+          antseed --version
+
+          antseed buyer start > "$RUNNER_TEMP/antseed-buyer.log" 2>&1 &
+          BUYER_PID=$!
+          trap 'kill "$BUYER_PID" 2>/dev/null || true; wait "$BUYER_PID" 2>/dev/null || true' EXIT
+
+          echo "Waiting for the local buyer API..."
+          ready=0
+          for i in $(seq 1 90); do
+            if ! kill -0 "$BUYER_PID" 2>/dev/null; then
+              echo "AntSeed buyer exited before becoming ready."
+              cat "$RUNNER_TEMP/antseed-buyer.log"
+              exit 1
+            fi
+            if curl --silent --show-error --fail http://127.0.0.1:8377/v1/models -o "$RUNNER_TEMP/models.json"; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "Buyer API did not become ready. Logs:"
+            cat "$RUNNER_TEMP/antseed-buyer.log"
+            exit 1
+          fi
+
+          echo "Buyer API is ready. Checking advertised GLM model IDs:"
+          node -e 'const j=require(process.argv[1]); for (const m of (j.data || [])) console.log(m.id);' "$RUNNER_TEMP/models.json"
+
+          echo "Sending the requested glm-5-3-flash chat-completion smoke test..."
+          curl --silent --show-error --fail-with-body --max-time 120 \
+            http://127.0.0.1:8377/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "model": "glm-5-3-flash",
+              "messages": [
+                {"role": "user", "content": "Hello!"}
+              ]
+            }' | tee "$RUNNER_TEMP/chat-response.json"
+
+          echo
+          node -e '
+            const fs = require("node:fs");
+            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (r.error || !Array.isArray(r.choices) || !r.choices[0]?.message) {
+              console.error("Unexpected or error response:", JSON.stringify(r));
+              process.exit(1);
+            }
+            console.log("\nPASS: API returned an assistant message.");
+          ' "$RUNNER_TEMP/chat-response.json"
+
+          echo "AntSeed buyer log:"
+          cat "$RUNNER_TEMP/antseed-buyer.log"
