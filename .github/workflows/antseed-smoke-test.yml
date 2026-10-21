@@ -26,15 +26,28 @@ jobs:
 
           npm install --global @antseed/cli
           antseed --version
-
-          # Mirror the safeguards configured by the Render wrapper.
           antseed config init
-          antseed config buyer set routingPreferences.preferFreePeers true
-          antseed config buyer set maxPricing.defaults.inputUsdPerMillion 0
-          antseed config buyer set maxPricing.defaults.outputUsdPerMillion 0
+
+          # Set typed JSON values directly. "config buyer set" treats "true" as a string.
+          node <<'NODE'
+          const fs = require('node:fs');
+          const os = require('node:os');
+          const path = require('node:path');
+          const file = path.join(os.homedir(), '.antseed', 'config.json');
+          const c = JSON.parse(fs.readFileSync(file, 'utf8'));
+          c.buyer = c.buyer || {};
+          c.buyer.routingPreferences = c.buyer.routingPreferences || {};
+          c.buyer.routingPreferences.preferFreePeers = true;
+          c.buyer.maxPricing = c.buyer.maxPricing || {};
+          c.buyer.maxPricing.defaults = c.buyer.maxPricing.defaults || {};
+          c.buyer.maxPricing.defaults.inputUsdPerMillion = 0;
+          c.buyer.maxPricing.defaults.outputUsdPerMillion = 0;
+          fs.writeFileSync(file, JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
+          fs.chmodSync(file, 0o600);
+          NODE
           antseed config buyer show
 
-          antseed buyer start > "$RUNNER_TEMP/antseed-buyer.log" 2>&1 &
+          antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0 > "$RUNNER_TEMP/antseed-buyer.log" 2>&1 &
           BUYER_PID=$!
           trap 'status=$?; trap - EXIT; kill "$BUYER_PID" 2>/dev/null || true; wait "$BUYER_PID" 2>/dev/null || true; if [ "$status" -ne 0 ]; then echo "AntSeed buyer log:"; cat "$RUNNER_TEMP/antseed-buyer.log"; fi; exit "$status"' EXIT
 
@@ -61,7 +74,7 @@ jobs:
           echo "Buyer API is ready. Matching model IDs:"
           node -e 'const j=require(process.argv[1]); for (const m of (j.data || [])) if (/glm.*5.*3.*flash|glm-5-3-flash/i.test(m.id)) console.log(m.id);' "$RUNNER_TEMP/models.json"
 
-          echo "Sending the glm-5-3-flash chat-completion request with hard $0 pricing caps..."
+          echo "Sending glm-5-3-flash request with hard $0 pricing caps..."
           if ! curl --silent --show-error --fail-with-body --max-time 120 \
             http://127.0.0.1:8377/v1/chat/completions \
             -H 'Content-Type: application/json' \
@@ -85,7 +98,7 @@ jobs:
             }
             const cost = Number(r.usage?.cost);
             if (!Number.isFinite(cost)) {
-              console.error("FAIL: response did not include a numeric usage.cost, so zero-cost routing cannot be verified.");
+              console.error("FAIL: response did not include numeric usage.cost; zero-cost routing cannot be verified.");
               process.exit(1);
             }
             console.log("\nReported request cost: $" + cost);
