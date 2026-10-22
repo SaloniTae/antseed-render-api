@@ -1,65 +1,60 @@
-name: AntSeed buyer smoke test
+name: AntSeed full API audit
 
 on:
   push:
     paths:
       - ".github/workflows/antseed-smoke-test.yml"
+      - "server.js"
+      - "package.json"
+      - "render.yaml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  buyer-smoke-test:
+  api-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Install AntSeed CLI and test GLM 5.3 Flash with free-only caps
+      - name: Install the same app dependencies Render uses
+        run: npm install
+
+      - name: Verify AntSeed CLI runtime flags
+        run: |
+          set -Eeuo pipefail
+          ./node_modules/.bin/antseed --version
+          ./node_modules/.bin/antseed buyer start --help | tee "$RUNNER_TEMP/buyer-help.txt"
+          grep -q -- '--max-input-usd-per-million' "$RUNNER_TEMP/buyer-help.txt"
+          grep -q -- '--max-output-usd-per-million' "$RUNNER_TEMP/buyer-help.txt"
+
+      - name: Start the real authenticated wrapper
         shell: bash
         run: |
           set -Eeuo pipefail
+          export API_TOKEN="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')"
+          export PORT=10000
 
-          npm install --global @antseed/cli
-          antseed --version
-          antseed config init
+          npm start > "$RUNNER_TEMP/app.log" 2>&1 &
+          APP_PID=$!
+          echo "$APP_PID" > "$RUNNER_TEMP/app.pid"
 
-          # Set typed JSON values directly. "config buyer set" treats "true" as a string.
-          node <<'NODE'
-          const fs = require('node:fs');
-          const os = require('node:os');
-          const path = require('node:path');
-          const file = path.join(os.homedir(), '.antseed', 'config.json');
-          const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-          c.buyer = c.buyer || {};
-          c.buyer.routingPreferences = c.buyer.routingPreferences || {};
-          c.buyer.routingPreferences.preferFreePeers = true;
-          c.buyer.maxPricing = c.buyer.maxPricing || {};
-          c.buyer.maxPricing.defaults = c.buyer.maxPricing.defaults || {};
-          c.buyer.maxPricing.defaults.inputUsdPerMillion = 0;
-          c.buyer.maxPricing.defaults.outputUsdPerMillion = 0;
-          fs.writeFileSync(file, JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
-          fs.chmodSync(file, 0o600);
-          NODE
-          antseed config buyer show
-
-          antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0 > "$RUNNER_TEMP/antseed-buyer.log" 2>&1 &
-          BUYER_PID=$!
-          trap 'status=$?; trap - EXIT; kill "$BUYER_PID" 2>/dev/null || true; wait "$BUYER_PID" 2>/dev/null || true; if [ "$status" -ne 0 ]; then echo "AntSeed buyer log:"; cat "$RUNNER_TEMP/antseed-buyer.log"; fi; exit "$status"' EXIT
-
-          echo "Waiting for the local buyer API..."
           ready=0
-          for i in $(seq 1 90); do
-            if ! kill -0 "$BUYER_PID" 2>/dev/null; then
-              echo "AntSeed buyer exited before becoming ready."
-              cat "$RUNNER_TEMP/antseed-buyer.log"
+          for i in $(seq 1 100); do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "Wrapper process exited during startup."
+              cat "$RUNNER_TEMP/app.log"
               exit 1
             fi
-            if curl --silent --show-error --fail http://127.0.0.1:8377/v1/models -o "$RUNNER_TEMP/models.json"; then
+            status="$(curl --silent --output "$RUNNER_TEMP/health.json" --write-out '%{http_code}' http://127.0.0.1:10000/healthz || true)"
+            if [ "$status" = "200" ]; then
               ready=1
               break
             fi
@@ -67,44 +62,183 @@ jobs:
           done
 
           if [ "$ready" -ne 1 ]; then
-            echo "Buyer API did not become ready."
+            echo "Wrapper did not become healthy."
+            cat "$RUNNER_TEMP/app.log"
             exit 1
           fi
+          echo "Health check:"
+          cat "$RUNNER_TEMP/health.json"
 
-          echo "Buyer API is ready. Matching model IDs:"
-          node -e 'const j=require(process.argv[1]); for (const m of (j.data || [])) if (/glm.*5.*3.*flash|glm-5-3-flash/i.test(m.id)) console.log(m.id);' "$RUNNER_TEMP/models.json"
-
-          echo "Sending glm-5-3-flash request with hard $0 pricing caps..."
-          if ! curl --silent --show-error --fail-with-body --max-time 120 \
-            http://127.0.0.1:8377/v1/chat/completions \
-            -H 'Content-Type: application/json' \
-            -d '{
-              "model": "glm-5-3-flash",
-              "messages": [
-                {"role": "user", "content": "Hello!"}
-              ]
-            }' -o "$RUNNER_TEMP/chat-response.json"; then
-            cat "$RUNNER_TEMP/chat-response.json" 2>/dev/null || true
-            exit 1
+          if ! ss -ltn | grep -E '127\.0\.0\.1:8377|\[::1\]:8377'; then
+            echo "WARNING: could not confirm buyer is bound only to loopback; inspect buyer log."
           fi
 
-          cat "$RUNNER_TEMP/chat-response.json"
-          node -e '
-            const fs = require("node:fs");
-            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            if (r.error || !Array.isArray(r.choices) || !r.choices[0]?.message) {
-              console.error("FAIL: no valid assistant message:", JSON.stringify(r));
-              process.exit(1);
-            }
-            const upstream = r.usage?.cost_details?.upstream_inference_cost;
-            console.log("\nPASS: assistant response received from " + (r.provider || "unknown provider") + ".");
-            console.log("Upstream-reported inference cost (not necessarily AntSeed buyer spend): " + upstream);
-          ' "$RUNNER_TEMP/chat-response.json"
+          echo "TOKEN=$API_TOKEN" >> "$GITHUB_ENV"
+          echo "APP_PID=$APP_PID" >> "$GITHUB_ENV"
+          echo "API_BASE=http://127.0.0.1:10000" >> "$GITHUB_ENV"
 
-          sleep 3
-          echo "AntSeed buyer activity (actual spend):"
-          antseed buyer activity --days 7 --json | tee "$RUNNER_TEMP/buyer-activity.json"
-          echo "AntSeed buyer metering:"
-          antseed buyer metering --json | tee "$RUNNER_TEMP/buyer-metering.json"
-          echo "AntSeed buyer log:"
-          cat "$RUNNER_TEMP/antseed-buyer.log"
+      - name: Test auth boundary, allowed routes and model catalog
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          base="$API_BASE"
+
+          code="$(curl --silent --output "$RUNNER_TEMP/no-auth.json" --write-out '%{http_code}' "$base/v1/models")"
+          test "$code" = "401"
+          echo "PASS: missing token is rejected with HTTP 401."
+
+          code="$(curl --silent --output "$RUNNER_TEMP/wrong-auth.json" --write-out '%{http_code}' -H 'Authorization: Bearer wrong-token' "$base/v1/models")"
+          test "$code" = "401"
+          echo "PASS: incorrect token is rejected with HTTP 401."
+
+          code="$(curl --silent --output "$RUNNER_TEMP/models.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" "$base/v1/models?type=text")"
+          test "$code" = "200"
+          node - "$RUNNER_TEMP/models.json" <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const models = (r.data || []).map(x => x.id);
+          const match = models.find(x => /glm-5-3-flash/i.test(x));
+          if (!match) {
+            console.error('GLM 5.3 Flash was not found in the text model catalog.');
+            process.exit(1);
+          }
+          console.log('PASS: model catalog returned GLM 5.3 Flash as', match);
+          console.log('Text catalog entries:', models.length);
+          NODE
+
+          code="$(curl --silent --output "$RUNNER_TEMP/private-route.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" "$base/_antseed/status")"
+          test "$code" = "404"
+          echo "PASS: AntSeed control-plane routes are not exposed."
+
+          code="$(curl --silent --output "$RUNNER_TEMP/media-route.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"model":"test"}' "$base/v1/images/generations")"
+          test "$code" = "404"
+          echo "PASS: separate image/media billing endpoints are not exposed."
+
+      - name: Test OpenAI Chat Completions and pricing telemetry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          code="$(curl --silent --show-error --max-time 120 --dump-header "$RUNNER_TEMP/chat.headers" --output "$RUNNER_TEMP/chat.json" --write-out '%{http_code}' \
+            "$API_BASE/v1/chat/completions" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"model":"glm-5-3-flash","messages":[{"role":"user","content":"Reply with exactly: CHAT_OK"}],"max_tokens":32}')"
+          if [ "$code" != "200" ]; then
+            cat "$RUNNER_TEMP/chat.json"
+            exit 1
+          fi
+          node - "$RUNNER_TEMP/chat.json" <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (!r.choices?.[0]?.message) {
+            console.error('Chat Completions payload is not OpenAI-compatible:', JSON.stringify(r));
+            process.exit(1);
+          }
+          console.log('PASS: chat completion returned a message.');
+          console.log('model:', r.model);
+          console.log('provider:', r.provider);
+          console.log('reply:', String(r.choices[0].message.content).slice(0, 200));
+          console.log('usage.cost (reported upstream estimate; not buyer settlement):', r.usage?.cost);
+          NODE
+          echo "AntSeed response price/peer headers:"
+          grep -iE '^x-antseed-(request-id|peer-id|provider|service|input-usd-per-million|output-usd-per-million|estimated-cost-usd|latency-ms|peer-reputation):' "$RUNNER_TEMP/chat.headers" || true
+
+      - name: Test streamed OpenAI Chat Completions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          code="$(curl --silent --show-error --no-buffer --max-time 120 --dump-header "$RUNNER_TEMP/stream.headers" --output "$RUNNER_TEMP/stream.txt" --write-out '%{http_code}' \
+            "$API_BASE/v1/chat/completions" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"model":"glm-5-3-flash","messages":[{"role":"user","content":"Say stream test passed."}],"max_tokens":32,"stream":true}')"
+          if [ "$code" != "200" ]; then
+            cat "$RUNNER_TEMP/stream.txt"
+            exit 1
+          fi
+          grep -q 'data:' "$RUNNER_TEMP/stream.txt"
+          grep -q '\[DONE\]' "$RUNNER_TEMP/stream.txt"
+          echo "PASS: streaming response returned SSE data and [DONE]."
+
+      - name: Test Anthropic Messages compatibility
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          code="$(curl --silent --show-error --max-time 120 --output "$RUNNER_TEMP/anthropic.json" --write-out '%{http_code}' \
+            "$API_BASE/v1/messages" \
+            -H "Authorization: Bearer $TOKEN" -H 'x-api-key: antseed-test' -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
+            -d '{"model":"glm-5-3-flash","max_tokens":32,"messages":[{"role":"user","content":"Reply with exactly: ANTHROPIC_OK"}]}')"
+          if [ "$code" != "200" ]; then
+            cat "$RUNNER_TEMP/anthropic.json"
+            exit 1
+          fi
+          node - "$RUNNER_TEMP/anthropic.json" <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (r.type !== 'message' || !Array.isArray(r.content)) {
+            console.error('Unexpected Anthropic Messages response:', JSON.stringify(r));
+            process.exit(1);
+          }
+          console.log('PASS: Anthropic Messages response shape returned.');
+          NODE
+
+      - name: Test OpenAI Responses compatibility
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          code="$(curl --silent --show-error --max-time 120 --output "$RUNNER_TEMP/responses.json" --write-out '%{http_code}' \
+            "$API_BASE/v1/responses" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"model":"glm-5-3-flash","input":"Reply with exactly: RESPONSES_OK","max_output_tokens":32}')"
+          if [ "$code" != "200" ]; then
+            cat "$RUNNER_TEMP/responses.json"
+            exit 1
+          fi
+          node - "$RUNNER_TEMP/responses.json" <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (r.object !== 'response' || !Array.isArray(r.output)) {
+            console.error('Unexpected Responses API payload:', JSON.stringify(r));
+            process.exit(1);
+          }
+          console.log('PASS: OpenAI Responses API response shape returned.');
+          NODE
+
+      - name: Test concurrent small requests and inspect actual buyer activity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for n in 1 2 3; do
+            (
+              curl --silent --show-error --fail-with-body --max-time 120 \
+                "$API_BASE/v1/chat/completions" \
+                -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+                -d "{\"model\":\"glm-5-3-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the word OK$n\"}],\"max_tokens\":16}" \
+                -o "$RUNNER_TEMP/concurrent-$n.json"
+              node - "$RUNNER_TEMP/concurrent-$n.json" "$n" <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (!r.choices?.[0]?.message) process.exit(1);
+          console.log('Concurrent request', process.argv[3], 'PASS; provider:', r.provider || 'not reported');
+          NODE
+            ) &
+          done
+          wait
+
+          sleep 2
+          ./node_modules/.bin/antseed buyer activity --days 7 --json | tee "$RUNNER_TEMP/activity.json"
+          ./node_modules/.bin/antseed buyer metering --json | tee "$RUNNER_TEMP/metering.json"
+          node - "$RUNNER_TEMP/activity.json" <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          console.log('Buyer activity totals:', JSON.stringify(r.totals || {}));
+          console.log('Buyer activity spending:', JSON.stringify(r.spending || {}));
+          NODE
+
+      - name: Verify shutdown
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/app.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/app.pid")" 2>/dev/null || true
+          fi
+          echo "Application startup log:"
+          cat "$RUNNER_TEMP/app.log" 2>/dev/null || true
