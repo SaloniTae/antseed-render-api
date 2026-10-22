@@ -25,6 +25,21 @@ const API_TOKEN = process.env.API_TOKEN;
 const API_TOKEN_CONFIGURED = typeof API_TOKEN === 'string' && API_TOKEN.length > 0;
 const ANTSEED_BIN = path.join(__dirname, 'node_modules', '.bin', 'antseed');
 const BUYER_PORT = 8377;
+const PROXY_TIMEOUT_MS = 35 * 60 * 1000; // align with AntSeed's 30-minute stream limit
+
+const EXACT_API_ROUTES = new Set([
+  'GET /v1/models',
+  'POST /v1/chat/completions',
+  'POST /v1/responses',
+  'POST /v1/messages',
+  'POST /v1/messages/count_tokens',
+]);
+
+function isAllowedApiRoute(req) {
+  if (EXACT_API_ROUTES.has(req.method + ' ' + req.path)) return true;
+  // Model IDs can contain slashes (for example, provider/model-name).
+  return req.method === 'GET' && /^\\/v1\\/models\\/.+/.test(req.path);
+}
 
 if (!API_TOKEN_CONFIGURED) {
   // Do not process.exit() during module initialization: Vercel turns it into the
@@ -127,12 +142,23 @@ app.use((req, res, next) => {
   return next();
 });
 
+// Expose only the intended text-model API. In particular, don't forward AntSeed's
+// /_antseed control plane or media endpoints whose billing is not token-price based.
+app.use((req, res, next) => {
+  if (!isAllowedApiRoute(req)) {
+    return res.status(404).json({
+      error: { message: 'Endpoint is not exposed by this text-only API wrapper', type: 'not_found' },
+    });
+  }
+  return next();
+});
+
 // Do not parse the request body before proxying; streaming completions must pass through.
 app.use('/', createProxyMiddleware({
   target: 'http://127.0.0.1:' + BUYER_PORT,
   changeOrigin: false,
-  proxyTimeout: 300000,
-  timeout: 300000,
+  proxyTimeout: PROXY_TIMEOUT_MS,
+  timeout: PROXY_TIMEOUT_MS,
   on: {
     error(err, _req, res) {
       console.error('AntSeed proxy error:', err.message);
