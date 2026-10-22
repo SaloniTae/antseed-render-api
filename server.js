@@ -8,14 +8,29 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
+// Vercel's deployed filesystem is read-only except for /tmp. AntSeed keeps its
+// config, identity and local state under its data directory, so give it a writable
+// location there. On persistent hosts, keep AntSeed's normal home-directory paths.
+if (process.env.VERCEL === '1') {
+  const antseedTmpDir = '/tmp/antseed';
+  process.env.ANTSEED_DATA_DIR = process.env.ANTSEED_DATA_DIR || antseedTmpDir;
+  process.env.ANTSEED_CONFIG =
+    process.env.ANTSEED_CONFIG || path.join(antseedTmpDir, 'config.json');
+  fs.mkdirSync(process.env.ANTSEED_DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.dirname(process.env.ANTSEED_CONFIG), { recursive: true, mode: 0o700 });
+}
+
 const PORT = Number(process.env.PORT || 10000);
 const API_TOKEN = process.env.API_TOKEN;
+const API_TOKEN_CONFIGURED = typeof API_TOKEN === 'string' && API_TOKEN.length >= 24;
 const ANTSEED_BIN = path.join(__dirname, 'node_modules', '.bin', 'antseed');
 const BUYER_PORT = 8377;
 
-if (!API_TOKEN || API_TOKEN.length < 24) {
-  console.error('Set API_TOKEN in Render Environment to a random secret of at least 24 characters.');
-  process.exit(1);
+if (!API_TOKEN_CONFIGURED) {
+  // Do not process.exit() during module initialization: Vercel turns it into the
+  // opaque FUNCTION_INVOCATION_FAILED page. Keep the API safely closed and report
+  // an actionable configuration error instead.
+  console.error('API_TOKEN is missing or too short. Configure a secret of at least 24 characters.');
 }
 
 let buyerReady = false;
@@ -81,14 +96,24 @@ const app = express();
 app.disable('x-powered-by');
 
 app.get('/healthz', (_req, res) => {
-  res.status(buyerReady ? 200 : 503).json({
-    ok: buyerReady,
+  const ready = API_TOKEN_CONFIGURED && buyerReady;
+  res.status(ready ? 200 : 503).json({
+    ok: ready,
     service: 'antseed-render-api',
     buyer: buyerReady ? 'ready' : 'starting',
+    configuration: API_TOKEN_CONFIGURED ? 'ok' : 'missing_api_token',
   });
 });
 
 app.use((req, res, next) => {
+  if (!API_TOKEN_CONFIGURED) {
+    return res.status(503).json({
+      error: {
+        message: 'Server misconfigured: set API_TOKEN in the deployment environment to a random secret of at least 24 characters.',
+        type: 'configuration_error',
+      },
+    });
+  }
   if (req.get('authorization') !== 'Bearer ' + API_TOKEN) {
     return res.status(401).json({
       error: { message: 'Missing or invalid API token', type: 'authentication_error' },
@@ -128,6 +153,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 async function startBuyer() {
+  if (!API_TOKEN_CONFIGURED) return;
+
   const configPath = path.resolve(
     process.env.ANTSEED_CONFIG || path.join(os.homedir(), '.antseed', 'config.json')
   );
@@ -138,7 +165,7 @@ async function startBuyer() {
   // Write booleans and numbers as actual JSON types; config buyer set treats CLI values as strings.
   configureFreeOnlyRouting();
 
-  // These CLI flags override config.json, enforcing zero-price hard caps for this process.
+  // Runtime flags are a hard cap, independent of seller/routing preferences.
   buyerProcess = spawn(ANTSEED_BIN, [
     'buyer',
     'start',
@@ -168,7 +195,7 @@ async function startBuyer() {
     }
     await sleep(2000);
   }
-  console.error('AntSeed buyer did not become ready within 180 seconds. Check Render logs.');
+  console.error('AntSeed buyer did not become ready within 180 seconds. Check deployment logs.');
 }
 
 startBuyer().catch(err => {
