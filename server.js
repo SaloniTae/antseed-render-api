@@ -38,7 +38,7 @@ const EXACT_API_ROUTES = new Set([
 function isAllowedApiRoute(req) {
   if (EXACT_API_ROUTES.has(req.method + ' ' + req.path)) return true;
   // Model IDs can contain slashes (for example, provider/model-name).
-  return req.method === 'GET' && /^\\/v1\\/models\\/.+/.test(req.path);
+  return req.method === 'GET' && /^\/v1\/models\/.+/.test(req.path);
 }
 
 if (!API_TOKEN_CONFIGURED) {
