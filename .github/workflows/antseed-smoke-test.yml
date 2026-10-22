@@ -27,6 +27,23 @@ jobs:
       - name: Install the same app dependencies Render uses
         run: npm install
 
+      - name: Dependency vulnerability summary
+        shell: bash
+        run: |
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node - "$RUNNER_TEMP/npm-audit.json" <<'NODE'
+          const fs = require('node:fs');
+          try {
+            const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+            console.log('npm audit counts:', JSON.stringify(r.metadata?.vulnerabilities || {}));
+            for (const [name, item] of Object.entries(r.vulnerabilities || {})) {
+              console.log(name + ': severity=' + item.severity + ', direct=' + item.isDirect + ', fixAvailable=' + JSON.stringify(item.fixAvailable));
+            }
+          } catch (e) {
+            console.log('Could not parse npm audit output:', e.message);
+          }
+          NODE
+
       - name: Verify AntSeed CLI runtime flags
         run: |
           set -Eeuo pipefail
