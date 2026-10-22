@@ -137,11 +137,11 @@ jobs:
             .flatMap(m => (m.peers || []).filter(p => Number(p.inputUsdPerMillion) === 0 && Number(p.outputUsdPerMillion) === 0)
               .map(p => ({model: m.id, ...offerSummary(p)}))).slice(0, 20);
           console.log('Example zero-price text offers:', JSON.stringify(freeOfferSummary));
-          const selectedFreeModel = '3040c5a1e12f416a1ed2d6ce62e1d34241da7139@ling-3.1-flash';
+          const selectedFreeModel = 'e85d7445bd5b0e29f6308fe8d42b5efdeea38f07@glm-4.7-flash';
           fs.appendFileSync(process.env.GITHUB_ENV,
             'MODEL_TARGET=' + match + '\n' +
             'MODEL_ID=' + selectedFreeModel + '\n');
-          console.log('Protocol test model selected from observed zero-price catalog offer: inclusionai/ling-3.1-flash (pinned seller).');
+          console.log('Protocol test model selected from observed zero-price catalog offer: glm-4.7-flash (pinned zero-price seller).');
           NODE
 
           code="$(curl --silent --output "$RUNNER_TEMP/private-route.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" "$base/_antseed/status")"
