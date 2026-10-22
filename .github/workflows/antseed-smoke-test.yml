@@ -97,13 +97,14 @@ jobs:
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
           const models = (r.data || []).map(x => x.id);
-          const match = models.find(x => /glm-5-3-flash/i.test(x));
+          const match = models.find(x => /^e2ee-glm-5-3-flash$/i.test(x)) || models.find(x => /^glm-5-3-flash$/i.test(x)) || models.find(x => /glm[-.]?5[-.]?3[-.]?flash/i.test(x));
           if (!match) {
             console.error('GLM 5.3 Flash was not found in the text model catalog.');
             process.exit(1);
           }
           console.log('PASS: model catalog returned GLM 5.3 Flash as', match);
           console.log('Text catalog entries:', models.length);
+fs.appendFileSync(process.env.GITHUB_ENV, 'MODEL_ID=' + match + '\n');
           NODE
 
           code="$(curl --silent --output "$RUNNER_TEMP/private-route.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" "$base/_antseed/status")"
@@ -121,7 +122,7 @@ jobs:
           code="$(curl --silent --show-error --max-time 120 --dump-header "$RUNNER_TEMP/chat.headers" --output "$RUNNER_TEMP/chat.json" --write-out '%{http_code}' \
             "$API_BASE/v1/chat/completions" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"model":"glm-5-3-flash","messages":[{"role":"user","content":"Reply with exactly: CHAT_OK"}],"max_tokens":32}')"
+            -d "$(node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_ID,messages:[{role:"user",content:"Reply with exactly: CHAT_OK"}],max_tokens:32}))')"
           if [ "$code" != "200" ]; then
             cat "$RUNNER_TEMP/chat.json"
             exit 1
@@ -149,7 +150,7 @@ jobs:
           code="$(curl --silent --show-error --no-buffer --max-time 120 --dump-header "$RUNNER_TEMP/stream.headers" --output "$RUNNER_TEMP/stream.txt" --write-out '%{http_code}' \
             "$API_BASE/v1/chat/completions" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"model":"glm-5-3-flash","messages":[{"role":"user","content":"Say stream test passed."}],"max_tokens":32,"stream":true}')"
+            -d "$(node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_ID,messages:[{role:"user",content:"Say stream test passed."}],max_tokens:32,stream:true}))')"
           if [ "$code" != "200" ]; then
             cat "$RUNNER_TEMP/stream.txt"
             exit 1
@@ -165,7 +166,7 @@ jobs:
           code="$(curl --silent --show-error --max-time 120 --output "$RUNNER_TEMP/anthropic.json" --write-out '%{http_code}' \
             "$API_BASE/v1/messages" \
             -H "Authorization: Bearer $TOKEN" -H 'x-api-key: antseed-test' -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
-            -d '{"model":"glm-5-3-flash","max_tokens":32,"messages":[{"role":"user","content":"Reply with exactly: ANTHROPIC_OK"}]}')"
+            -d "$(node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_ID,max_tokens:32,messages:[{role:"user",content:"Reply with exactly: ANTHROPIC_OK"}]}))')"
           if [ "$code" != "200" ]; then
             cat "$RUNNER_TEMP/anthropic.json"
             exit 1
@@ -187,7 +188,7 @@ jobs:
           code="$(curl --silent --show-error --max-time 120 --output "$RUNNER_TEMP/responses.json" --write-out '%{http_code}' \
             "$API_BASE/v1/responses" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"model":"glm-5-3-flash","input":"Reply with exactly: RESPONSES_OK","max_output_tokens":32}')"
+            -d "$(node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_ID,input:"Reply with exactly: RESPONSES_OK",max_output_tokens:32}))')"
           if [ "$code" != "200" ]; then
             cat "$RUNNER_TEMP/responses.json"
             exit 1
@@ -211,7 +212,7 @@ jobs:
               curl --silent --show-error --fail-with-body --max-time 120 \
                 "$API_BASE/v1/chat/completions" \
                 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-                -d "{\"model\":\"glm-5-3-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the word OK$n\"}],\"max_tokens\":16}" \
+                -d "$(MODEL_ID="$MODEL_ID" N="$n" node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_ID,messages:[{role:"user",content:"Reply with the word OK"+process.env.N}],max_tokens:16}))')" \
                 -o "$RUNNER_TEMP/concurrent-$n.json"
               node - "$RUNNER_TEMP/concurrent-$n.json" "$n" <<'NODE'
           const fs = require('node:fs');
