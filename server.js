@@ -129,7 +129,10 @@ app.use((req, res, next) => {
       },
     });
   }
-  if (req.get('authorization') !== 'Bearer ' + API_TOKEN) {
+  // OpenAI-compatible clients use Authorization: Bearer; Anthropic clients normally use x-api-key.
+  const bearerToken = req.get('authorization') || '';
+  const anthropicKey = req.get('x-api-key') || '';
+  if (bearerToken !== 'Bearer ' + API_TOKEN && anthropicKey !== API_TOKEN) {
     return res.status(401).json({
       error: { message: 'Missing or invalid API token', type: 'authentication_error' },
     });
