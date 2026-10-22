@@ -109,6 +109,14 @@ jobs:
           test "$code" = "401"
           echo "PASS: incorrect token is rejected with HTTP 401."
 
+          code="$(curl --silent --output "$RUNNER_TEMP/wrong-x-api-key.json" --write-out '%{http_code}' -H 'x-api-key: wrong-token' "$base/v1/models")"
+          test "$code" = "401"
+          echo "PASS: incorrect Anthropic x-api-key is rejected with HTTP 401."
+
+          code="$(curl --silent --output "$RUNNER_TEMP/x-api-key-only.json" --write-out '%{http_code}' -H "x-api-key: $TOKEN" "$base/v1/models")"
+          test "$code" = "200"
+          echo "PASS: native x-api-key-only authentication is accepted."
+
           code="$(curl --silent --output "$RUNNER_TEMP/models.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" "$base/v1/models?type=text")"
           test "$code" = "200"
           node - "$RUNNER_TEMP/models.json" <<'NODE'
@@ -217,7 +225,7 @@ jobs:
           set -Eeuo pipefail
           code="$(curl --silent --show-error --max-time 120 --output "$RUNNER_TEMP/anthropic.json" --write-out '%{http_code}' \
             "$API_BASE/v1/messages" \
-            -H "Authorization: Bearer $TOKEN" -H 'x-api-key: antseed-test' -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
+            -H "x-api-key: $TOKEN" -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
             -d "$(node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_ID,max_tokens:32,messages:[{role:"user",content:"Reply with exactly: ANTHROPIC_OK"}]}))')")"
           if [ "$code" != "200" ]; then
             cat "$RUNNER_TEMP/anthropic.json"
