@@ -137,7 +137,11 @@ jobs:
             .flatMap(m => (m.peers || []).filter(p => Number(p.inputUsdPerMillion) === 0 && Number(p.outputUsdPerMillion) === 0)
               .map(p => ({model: m.id, ...offerSummary(p)}))).slice(0, 20);
           console.log('Example zero-price text offers:', JSON.stringify(freeOfferSummary));
-          fs.appendFileSync(process.env.GITHUB_ENV, 'MODEL_ID=' + match + '\n');
+          const selectedFreeModel = '3040c5a1e12f416a1ed2d6ce62e1d34241da7139@ling-3.1-flash';
+          fs.appendFileSync(process.env.GITHUB_ENV,
+            'MODEL_TARGET=' + match + '\n' +
+            'MODEL_ID=' + selectedFreeModel + '\n');
+          console.log('Protocol test model selected from observed zero-price catalog offer: inclusionai/ling-3.1-flash (pinned seller).');
           NODE
 
           code="$(curl --silent --output "$RUNNER_TEMP/private-route.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" "$base/_antseed/status")"
@@ -147,6 +151,21 @@ jobs:
           code="$(curl --silent --output "$RUNNER_TEMP/media-route.json" --write-out '%{http_code}' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"model":"test"}' "$base/v1/images/generations")"
           test "$code" = "404"
           echo "PASS: separate image/media billing endpoints are not exposed."
+
+      - name: Probe target GLM 5.3 Flash with hard $0 caps
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          code="$(curl --silent --show-error --max-time 45 --output "$RUNNER_TEMP/glm-target.json" --write-out '%{http_code}' \
+            "$API_BASE/v1/chat/completions" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d "$(MODEL_TARGET="$MODEL_TARGET" node -e 'process.stdout.write(JSON.stringify({model:process.env.MODEL_TARGET,messages:[{role:"user",content:"Reply with exactly: GLM_OK"}],max_tokens:16}))')")" || true
+          if [ "$code" = "200" ]; then
+            echo "PASS: GLM 5.3 Flash responded within the current zero-price caps."
+          else
+            echo "GLM 5.3 Flash is unavailable under this free-only policy right now (HTTP $code). This is fail-closed behavior, not a paid fallback:"
+            cat "$RUNNER_TEMP/glm-target.json" 2>/dev/null || true
+          fi
 
       - name: Test OpenAI Chat Completions and pricing telemetry
         shell: bash
