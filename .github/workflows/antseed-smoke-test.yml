@@ -122,6 +122,21 @@ jobs:
           }
           console.log('PASS: model catalog returned GLM 5.3 Flash as', match);
           console.log('Text catalog entries:', models.length);
+          const glm = (r.data || []).find(m => [m.id, m.name, ...(m.aliases || [])].some(x => /glm[-.]?5[-.]?3[-.]?flash/i.test(String(x || ''))));
+          const offerSummary = p => ({
+            peerId: p.peerId, provider: p.provider, serviceId: p.serviceId,
+            protocols: p.protocols,
+            inputUsdPerMillion: p.inputUsdPerMillion,
+            outputUsdPerMillion: p.outputUsdPerMillion,
+            cachedInputUsdPerMillion: p.cachedInputUsdPerMillion,
+            reputationScore: p.reputationScore,
+            effectiveReputationScore: p.effectiveReputationScore
+          });
+          console.log('GLM offers:', JSON.stringify((glm?.peers || []).slice(0, 8).map(offerSummary)));
+          const freeOfferSummary = (r.data || []).filter(m => m.type === 'text')
+            .flatMap(m => (m.peers || []).filter(p => Number(p.inputUsdPerMillion) === 0 && Number(p.outputUsdPerMillion) === 0)
+              .map(p => ({model: m.id, ...offerSummary(p)}))).slice(0, 20);
+          console.log('Example zero-price text offers:', JSON.stringify(freeOfferSummary));
           fs.appendFileSync(process.env.GITHUB_ENV, 'MODEL_ID=' + match + '\n');
           NODE
 
