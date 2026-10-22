@@ -22,7 +22,7 @@ if (process.env.VERCEL === '1') {
 
 const PORT = Number(process.env.PORT || 10000);
 const API_TOKEN = process.env.API_TOKEN;
-const API_TOKEN_CONFIGURED = typeof API_TOKEN === 'string' && API_TOKEN.length >= 24;
+const API_TOKEN_CONFIGURED = typeof API_TOKEN === 'string' && API_TOKEN.length > 0;
 const ANTSEED_BIN = path.join(__dirname, 'node_modules', '.bin', 'antseed');
 const BUYER_PORT = 8377;
 
@@ -30,7 +30,7 @@ if (!API_TOKEN_CONFIGURED) {
   // Do not process.exit() during module initialization: Vercel turns it into the
   // opaque FUNCTION_INVOCATION_FAILED page. Keep the API safely closed and report
   // an actionable configuration error instead.
-  console.error('API_TOKEN is missing or too short. Configure a secret of at least 24 characters.');
+  console.error('API_TOKEN is missing. Set API_TOKEN in the Vercel Environment Variables to the token you want to use.');
 }
 
 let buyerReady = false;
@@ -109,7 +109,7 @@ app.use((req, res, next) => {
   if (!API_TOKEN_CONFIGURED) {
     return res.status(503).json({
       error: {
-        message: 'Server misconfigured: set API_TOKEN in the deployment environment to a random secret of at least 24 characters.',
+        message: 'Server misconfigured: set API_TOKEN in the deployment environment.',
         type: 'configuration_error',
       },
     });
